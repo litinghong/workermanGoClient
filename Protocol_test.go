@@ -15,7 +15,7 @@ func TestNewProtocol(t *testing.T) {
 func TestToBuffer(t *testing.T) {
 	p := NewProtocol(nil)
 	p.Body = "messageString"
-	buf := p.ToBuffer()
+	buf, _ := p.ToBuffer()
 	err := ioutil.WriteFile("/Users/yons/Documents/workermanGoClient/w.bin", buf, os.ModeAppend)
 	fmt.Println(err)
 }
