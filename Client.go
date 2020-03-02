@@ -11,6 +11,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -41,8 +42,79 @@ type Client struct {
 	connectionIds []uint32
 }
 
+type gatewaySocket struct {
+	GatewayAddress string
+	IsIdle         bool
+	conn           net.Conn
+}
+
 // 网关地址
 var gatewayAddress []string
+
+// 连接池
+var (
+	pool map[string][]*gatewaySocket
+	// 连接池写锁
+	poolRWGuard sync.RWMutex
+	// 连接池中当前连接数量
+	socketCount int
+)
+
+// 连接池最大连接数量
+const PoolMaxConn = 100
+
+// 连接超时时间(秒)
+const ConnectionTimeout = 30
+
+// 新建连接
+func newSocket(address string) (*gatewaySocket, error) {
+	conn, err := net.DialTimeout("tcp", address, time.Second*ConnectionTimeout)
+	if err != nil {
+		return nil, err
+	}
+
+	socket := &gatewaySocket{
+		GatewayAddress: address,
+		IsIdle:         true,
+		conn:           conn,
+	}
+	return socket, nil
+}
+
+func getSocket(address string) (*gatewaySocket, error) {
+	poolRWGuard.RLock()
+	defer poolRWGuard.RUnlock()
+	for _, socket := range pool[address] {
+		if socket.IsIdle == true {
+			socket.IsIdle = false
+			return socket, nil
+		}
+	}
+
+	if len(pool[address]) < PoolMaxConn {
+		socket, err := newSocket(address)
+		if err != nil {
+			return nil, err
+		}
+
+		fmt.Println("sendBufferToGateway: ", address, " connected!", socketCount)
+
+		if pool == nil {
+			pool = make(map[string][]*gatewaySocket)
+		}
+
+		pool[address] = append(pool[address], socket)
+		socketCount++
+		socket.IsIdle = false
+		return socket, nil
+	}
+
+	return nil, errors.New("已超过最大连接数")
+}
+
+func (s *gatewaySocket) free() {
+	s.IsIdle = true
+}
 
 func NewInstance(registerAddr string, port int, connectTimeOut time.Duration, secretKey string) *Instance {
 	client := &Instance{
@@ -111,7 +183,7 @@ func (c *Instance) SendToAll(message string, clientIdList []string, raw bool) {
 			continue
 		}
 		gatewayData.ExtData = string(extDataStr)
-		err = sendToGateway(address, gatewayData, c.connectTimeout)
+		err = sendToGateway(address, gatewayData)
 		if err != nil {
 			failure++
 			fmt.Println(err)
@@ -143,23 +215,22 @@ func clientIdToAddress(clientId string) (localIp string, localPort uint16, conne
 }
 
 // 发送数据到网关
-func sendToGateway(address string, gatewayData *Protocol, timeout time.Duration) error {
+func sendToGateway(address string, gatewayData *Protocol) error {
 	buffer, err := gatewayData.ToBuffer()
 	if err != nil {
 		return err
 	}
-	return sendBufferToGateway(address, buffer, timeout)
+	return sendBufferToGateway(address, buffer)
 }
 
 // 发送buffer数据到网关
-func sendBufferToGateway(address string, gatewayBuffer []byte, timeout time.Duration) error {
-	conn, err := net.DialTimeout("tcp", address, timeout)
+func sendBufferToGateway(address string, gatewayBuffer []byte) error {
+	socket, err := getSocket(address)
 	if err != nil {
 		fmt.Println(err)
 		return err
 	}
-	fmt.Println("sendBufferToGateway: connected!")
-	defer conn.Close()
+	conn := socket.conn
 
 	// 发送连接信息
 	_, err = conn.Write(gatewayBuffer)
@@ -167,6 +238,7 @@ func sendBufferToGateway(address string, gatewayBuffer []byte, timeout time.Dura
 		fmt.Println("sendBufferToGateway error:", err)
 	}
 
+	socket.free()
 	return nil
 }
 
@@ -406,7 +478,7 @@ func (c *Instance) SendToUid(uid, message string) {
 	gatewayData.Body = message
 
 	for _, address := range gatewayAddress {
-		err := sendToGateway(address, &gatewayData, time.Second*30)
+		err := sendToGateway(address, &gatewayData)
 		if err != nil {
 			fmt.Println(err)
 		}

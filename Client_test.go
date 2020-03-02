@@ -22,7 +22,7 @@ func TestGetClientIdByUid(t *testing.T) {
 func TestSendToUid(t *testing.T) {
 	client := NewInstance("127.0.0.1", 1238, time.Second*30, "")
 
-	for i := 0; i < 1000; i++ {
+	for i := 0; i < 10000; i++ {
 		client.SendToUid("1", fmt.Sprintf("Hello %d", i))
 	}
 }
