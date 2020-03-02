@@ -55,7 +55,7 @@ var gatewayAddress []string
 var (
 	pool map[string][]*gatewaySocket
 	// 连接池写锁
-	poolRWGuard sync.RWMutex
+	poolRWGuard sync.Mutex
 	// 连接池中当前连接数量
 	socketCount int
 )
@@ -82,8 +82,8 @@ func newSocket(address string) (*gatewaySocket, error) {
 }
 
 func getSocket(address string) (*gatewaySocket, error) {
-	poolRWGuard.RLock()
-	defer poolRWGuard.RUnlock()
+	poolRWGuard.Lock()
+	defer poolRWGuard.Unlock()
 	for _, socket := range pool[address] {
 		if socket.IsIdle == true {
 			socket.IsIdle = false
@@ -478,9 +478,6 @@ func (c *Instance) SendToUid(uid, message string) {
 	gatewayData.Body = message
 
 	for _, address := range gatewayAddress {
-		err := sendToGateway(address, &gatewayData)
-		if err != nil {
-			fmt.Println(err)
-		}
+		go sendToGateway(address, &gatewayData)
 	}
 }
