@@ -135,6 +135,6 @@ func (p *Protocol) ToBuffer() ([]byte, error) {
 	binary.Write(buffer, binary.BigEndian, p.GatewayPort)
 	binary.Write(buffer, binary.BigEndian, p.ExtLen)
 	binary.Write(buffer, binary.BigEndian, []byte(p.ExtData))
-	binary.Write(buffer, binary.BigEndian, []byte(body))
+	binary.Write(buffer, binary.BigEndian, body)
 	return buffer.Bytes(), nil
 }

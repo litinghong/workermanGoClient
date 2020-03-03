@@ -43,6 +43,7 @@ type Client struct {
 }
 
 type gatewaySocket struct {
+	id             int
 	GatewayAddress string
 	IsIdle         bool
 	conn           net.Conn
@@ -66,6 +67,18 @@ const PoolMaxConn = 100
 // 连接超时时间(秒)
 const ConnectionTimeout = 30
 
+var (
+	socketId      int
+	socketIdGuard sync.Mutex
+)
+
+func generateSocketId() int {
+	socketIdGuard.Lock()
+	socketId++
+	socketIdGuard.Unlock()
+	return socketId
+}
+
 // 新建连接
 func newSocket(address string) (*gatewaySocket, error) {
 	conn, err := net.DialTimeout("tcp", address, time.Second*ConnectionTimeout)
@@ -78,6 +91,7 @@ func newSocket(address string) (*gatewaySocket, error) {
 		IsIdle:         true,
 		conn:           conn,
 	}
+	socket.id = generateSocketId()
 	return socket, nil
 }
 
@@ -110,6 +124,28 @@ func getSocket(address string) (*gatewaySocket, error) {
 	}
 
 	return nil, errors.New("已超过最大连接数")
+}
+
+// 从连接池中移除socket
+func removeSocket(socket *gatewaySocket) {
+	poolRWGuard.Lock()
+	newPool := make(map[string][]*gatewaySocket)
+
+	for _, s := range pool[socket.GatewayAddress] {
+		if s.id != socket.id {
+			newPool[socket.GatewayAddress] = append(newPool[socket.GatewayAddress], s)
+		}
+	}
+	pool = newPool
+	poolRWGuard.Unlock()
+}
+
+// 尝试恢复连接
+func recoverSocket(socket *gatewaySocket) error {
+	socket.conn.Close()
+	conn, err := net.DialTimeout("tcp", socket.GatewayAddress, time.Second*ConnectionTimeout)
+	socket.conn = conn
+	return err
 }
 
 func (s *gatewaySocket) free() {
@@ -233,9 +269,27 @@ func sendBufferToGateway(address string, gatewayBuffer []byte) error {
 	conn := socket.conn
 
 	// 发送连接信息
-	_, err = conn.Write(gatewayBuffer)
+	i, err := conn.Write(gatewayBuffer)
 	if err != nil {
 		fmt.Println("sendBufferToGateway error:", err)
+
+		err = recoverSocket(socket)
+		if err != nil {
+			fmt.Println("sendBufferToGateway try to recover socket failure")
+
+			// 移除无效连接
+			removeSocket(socket)
+		} else {
+			// 再重试一次
+			i, err = socket.conn.Write(gatewayBuffer)
+			if err != nil {
+				fmt.Println("sendBufferToGateway recover send error:", err)
+			}
+		}
+	}
+
+	if i < len(gatewayBuffer) {
+		fmt.Println("sendBufferToGateway 发送长度不对:", len(gatewayBuffer), i)
 	}
 
 	socket.free()
@@ -478,6 +532,21 @@ func (c *Instance) SendToUid(uid, message string) {
 	gatewayData.Body = message
 
 	for _, address := range gatewayAddress {
-		go sendToGateway(address, &gatewayData)
+		err := sendToGateway(address, &gatewayData)
+		if err != nil {
+			fmt.Println(err)
+		}
+	}
+}
+
+// 关闭连接池中所有连接
+func (c *Instance) Close() {
+	for _, sockets := range pool {
+		for _, socket := range sockets {
+			err := socket.conn.Close()
+			if err != nil {
+				fmt.Println(err)
+			}
+		}
 	}
 }
