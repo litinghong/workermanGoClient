@@ -19,7 +19,7 @@ type Protocol struct {
 	GatewayPort  uint16
 	ExtLen       uint32
 	ExtData      string
-	Body         string
+	Body         interface{}
 	MixedBody    string
 }
 
@@ -116,10 +116,36 @@ func NewProtocol(buffer []byte) *Protocol {
 func (p *Protocol) ToBuffer() ([]byte, error) {
 	buffer := bytes.NewBuffer([]byte{})
 	p.ExtLen = uint32(len(p.ExtData))
-	body, err := serialize.Marshal(p.Body)
-	if err != nil {
-		fmt.Println("toBuffer Error:", err)
-		// FIXME
+
+	var body []byte
+	switch p.Body.(type) {
+	case string:
+		body = []byte(fmt.Sprintf("%s", p.Body))
+		p.Flag |= 1
+		break
+	case int:
+		body = []byte(fmt.Sprintf("%s", p.Body))
+		p.Flag |= 1
+		break
+	case bool:
+		body = []byte(fmt.Sprintf("%s", p.Body))
+		p.Flag |= 1
+		break
+	case float32:
+		body = []byte(fmt.Sprintf("%s", p.Body))
+		p.Flag |= 1
+		break
+	case float64:
+		body = []byte(fmt.Sprintf("%s", p.Body))
+		p.Flag |= 1
+		break
+	default:
+		_body, err := serialize.Marshal(p.Body)
+		if err != nil {
+			fmt.Println("toBuffer Error:", err)
+			return nil, err
+		}
+		body = _body
 	}
 
 	p.PacketLen = 28 + p.ExtLen + uint32(len(body))
