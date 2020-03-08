@@ -1,8 +1,8 @@
 package workermanGoClient
 
 import (
-	"bytes"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -167,6 +167,40 @@ func NewInstance(registerAddr string, port int, connectTimeOut time.Duration, se
 	return client
 }
 
+func (c *Instance) GetAllUidList() {
+
+}
+
+func selectFromGateway(fields []string, where map[string]interface{}) {
+	//gatewayData := Protocol{}
+	//gatewayData.Cmd = CMD_SELECT
+	//extData := map[string]interface{}{
+	//	"fields": fields,
+	//	"where": where,
+	//}
+	//
+	//if where["client_id"] != nil {
+	//	clientIdLIst := where["client_id"]
+	//
+	//}
+
+}
+
+// 向指定uid发送消息
+func (c *Instance) SendToUid(uid, message string) {
+	gatewayData := Protocol{}
+	gatewayData.Cmd = CMD_SEND_TO_UID
+	gatewayData.ExtData = fmt.Sprintf("[%s]", uid)
+	gatewayData.Body = message
+
+	for _, address := range gatewayAddress {
+		err := sendToGateway(address, &gatewayData)
+		if err != nil {
+			fmt.Println(err)
+		}
+	}
+}
+
 /**
  * 向所有客户端连接(或者 client_id_array 指定的客户端连接)广播消息
  *
@@ -177,11 +211,7 @@ func NewInstance(registerAddr string, port int, connectTimeOut time.Duration, se
  * @return void
  * @throws Exception
  */
-func (c *Instance) SendToAll(message string, clientIdList []string, raw bool) {
-	if len(clientIdList) == 0 {
-		return
-	}
-
+func (c *Instance) SendToAll(message string, clientIdList, excludeIdList []string, raw bool) {
 	gatewayData := &Protocol{}
 	gatewayData.Cmd = CMD_SEND_TO_ALL
 	gatewayData.Body = message
@@ -190,41 +220,75 @@ func (c *Instance) SendToAll(message string, clientIdList []string, raw bool) {
 		gatewayData.Flag |= FLAG_NOT_CALL_ENCODE
 	}
 
-	dataArray := make(map[string][]uint32)
-	for _, clientId := range clientIdList {
-		localIp, port, connectionId, err := clientIdToAddress(clientId)
-		if err != nil {
-			fmt.Println(err)
-			continue
-		}
-
-		address := fmt.Sprintf("%s:%d", localIp, port)
-		dataArray[address] = append(dataArray[address], connectionId)
-
-		//err := sendToGateway(address, gatewayData, c.connectTimeout)
-		//if err != nil {
-		//	fmt.Println("send to address: ", address, " error: ", err)
-		//}
+	excludeDict := map[string]bool{}
+	for _, s := range excludeIdList {
+		excludeDict[s] = true
 	}
 
+	dataArray := make(map[string][]uint32)
+
 	var success, failure int
-	for address, connectionIdList := range dataArray {
-		extData := map[string][]uint32{
-			"connections": connectionIdList,
+	if clientIdList != nil {
+		for _, clientId := range clientIdList {
+			if excludeDict[clientId] == true {
+				continue
+			}
+
+			localIp, port, connectionId, err := clientIdToAddress(clientId)
+			if err != nil {
+				fmt.Println(err)
+				continue
+			}
+
+			address := fmt.Sprintf("%s:%d", localIp, port)
+			dataArray[address] = append(dataArray[address], connectionId)
 		}
 
-		extDataStr, err := json.Marshal(extData)
-		if err != nil {
-			fmt.Println(err)
-			continue
+		for address, connectionIdList := range dataArray {
+			extData := map[string][]uint32{
+				"connections": connectionIdList,
+			}
+
+			extDataStr, err := json.Marshal(extData)
+			if err != nil {
+				fmt.Println(err)
+				continue
+			}
+			gatewayData.ExtData = string(extDataStr)
+			err = sendToGateway(address, gatewayData)
+			if err != nil {
+				failure++
+				fmt.Println(err)
+			} else {
+				success++
+			}
 		}
-		gatewayData.ExtData = string(extDataStr)
-		err = sendToGateway(address, gatewayData)
-		if err != nil {
-			failure++
-			fmt.Println(err)
-		} else {
-			success++
+	} else if len(excludeIdList) == 0 {
+		sendToAllGateway(gatewayData)
+	} else {
+		exclude := map[string]map[uint32]uint32{}
+		for _, clientId := range excludeIdList {
+			localIp, localPort, connectionId, err := clientIdToAddress(clientId)
+			if err != nil {
+				address := fmt.Sprintf("%s:%d", localIp, localPort)
+				exclude[address][connectionId] = connectionId
+			}
+		}
+
+		for _, gatewayAddress := range gatewayAddress {
+			if exclude[gatewayAddress] != nil {
+				extData, err := json.Marshal(map[string]map[uint32]uint32{
+					"exclude": exclude[gatewayAddress],
+				})
+
+				if err == nil {
+					fmt.Println(err)
+					continue
+				}
+				gatewayData.ExtData = string(extData)
+				err = sendToGateway(gatewayAddress, gatewayData)
+				fmt.Println(err)
+			}
 		}
 	}
 
@@ -238,15 +302,16 @@ func clientIdToAddress(clientId string) (localIp string, localPort uint16, conne
 		return
 	}
 
-	br := bytes.NewReader([]byte(clientId))
+	dest := make([]byte, hex.DecodedLen(20))
+	_, err = hex.Decode(dest, []byte(clientId))
+	if err != nil {
+		return
+	}
 
-	ipByte := make([]byte, 4)
-	binary.Read(br, binary.BigEndian, ipByte)
-	ipv4 := net.IPv4(ipByte[0], ipByte[1], ipByte[2], ipByte[3])
-	localIp = ipv4.String()
+	localIp = fmt.Sprintf("%d.%d.%d.%d", dest[0], dest[1], dest[2], dest[3])
+	localPort = binary.BigEndian.Uint16(dest[4:6])
+	connectionId = binary.BigEndian.Uint32(dest[6:])
 
-	binary.Read(br, binary.BigEndian, localPort)
-	binary.Read(br, binary.BigEndian, connectionId)
 	return
 }
 
@@ -257,6 +322,20 @@ func sendToGateway(address string, gatewayData *Protocol) error {
 		return err
 	}
 	return sendBufferToGateway(address, buffer)
+}
+
+// 向所有 gateway 发送数据
+func sendToAllGateway(gatewayData *Protocol) []error {
+	var errs []error
+	for _, address := range gatewayAddress {
+		err := sendToGateway(address, gatewayData)
+		if err != nil {
+			fmt.Println(err)
+			errs = append(errs, err)
+		}
+	}
+
+	return errs
 }
 
 // 发送buffer数据到网关
@@ -408,25 +487,6 @@ func handleRecvAddress(conn net.Conn, ch chan []string) {
 	}
 }
 
-func handleConn(conn net.Conn, ch chan []byte) {
-	defer conn.Close()
-	for {
-		// read from the connection
-		var buf = make([]byte, 655350)
-		log.Println("start to read from conn")
-		n, err := conn.Read(buf)
-		if err != nil {
-			log.Println("conn read error:", err)
-			return
-		}
-		log.Printf("read %d bytes, content is %s\n", n, string(buf[:n]))
-
-		// 反回数据
-		ch <- buf[:n]
-		return
-	}
-}
-
 // 获取所有在线client_id的session和clientId
 func (c *Instance) GetAllClientSessions(group string) []ClientWithSession {
 	gatewayData := &Protocol{}
@@ -522,21 +582,6 @@ func (c *Instance) GetClientIdByUid(uid string) (clientList []Client) {
 	}
 
 	return
-}
-
-// 向指定uid发送消息
-func (c *Instance) SendToUid(uid, message string) {
-	gatewayData := Protocol{}
-	gatewayData.Cmd = CMD_SEND_TO_UID
-	gatewayData.ExtData = fmt.Sprintf("[%s]", uid)
-	gatewayData.Body = message
-
-	for _, address := range gatewayAddress {
-		err := sendToGateway(address, &gatewayData)
-		if err != nil {
-			fmt.Println(err)
-		}
-	}
 }
 
 // 关闭连接池中所有连接

@@ -62,6 +62,8 @@ const (
 	CMD_GET_CLINET_INFO_BY_GROUP uint8 = 23
 	// 获取组成员数
 	CMD_GET_CLIENT_COUNT_BY_GROUP uint8 = 24
+	// 按照条件查找
+	CMD_SELECT uint8 = 25
 	// worker连接gateway事件
 	CMD_WORKER_CONNECT uint8 = 200
 	// 心跳
