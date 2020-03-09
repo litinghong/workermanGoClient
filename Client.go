@@ -23,11 +23,6 @@ type Instance struct {
 	connectTimeout  time.Duration
 }
 
-type GatewayBuffer struct {
-	GatewayAddress string
-	Buffer         []byte
-}
-
 // 在线用户的session clientId
 type ClientWithSession struct {
 	GatewayAddress string
@@ -171,19 +166,60 @@ func (c *Instance) GetAllUidList() {
 
 }
 
-func selectFromGateway(fields []string, where map[string]interface{}) {
-	//gatewayData := Protocol{}
-	//gatewayData.Cmd = CMD_SELECT
-	//extData := map[string]interface{}{
-	//	"fields": fields,
-	//	"where": where,
-	//}
-	//
-	//if where["client_id"] != nil {
-	//	clientIdLIst := where["client_id"]
-	//
-	//}
+//
+// where = ['groups'=>[x,x..], 'uid'=>[x,x..], 'connection_id'=>[x,x..], 'client_id' => [x,x...]]
+func selectFromGateway(fields []string, where map[string][]string) (interface{}, error) {
 
+	gatewayDataList := map[string]Protocol{}
+
+	// 有client_id，能计算出需要和哪些gateway通讯，只和必要的gateway通讯能降低系统负载
+	if len(where) == 1 {
+		if clientIdList, ok := where["client_id"]; ok == true {
+			for _, clientId := range clientIdList {
+				localIp, localPort, _, err := clientIdToAddress(clientId)
+				if err != nil {
+					fmt.Println(err)
+					continue
+				}
+
+				address := fmt.Sprintf("%s:%d", localIp, localPort)
+				gatewayData := Protocol{}
+				gatewayData.Cmd = CMD_SELECT
+				extData := map[string]interface{}{
+					"fields": fields,
+					"where":  where,
+				}
+
+				extDataByte, err := json.Marshal(extData)
+				if err != nil {
+					fmt.Println(err)
+					continue
+				}
+				gatewayData.ExtData = string(extDataByte)
+				gatewayDataList[address] = gatewayData
+			}
+
+			// 准备接收数据
+			recv := make(chan GatewayBuffer)
+			wg := sync.WaitGroup{}
+			wg.Add(len(gatewayDataList))
+
+			recvData := make([]GatewayBuffer, len(gatewayDataList))
+			go func() {
+				recvData = append(recvData, <-recv)
+			}()
+
+			// 向网关发送数据
+			for address, protocal := range gatewayDataList {
+				buffer, _ := protocal.ToBuffer()
+				sendAndRecv(address, buffer, recv)
+			}
+		}
+	}
+
+	// 有其它条件，则还是需要向所有gateway发送
+	// TODO
+	return nil, nil
 }
 
 // 向指定uid发送消息
@@ -375,12 +411,60 @@ func sendBufferToGateway(address string, gatewayBuffer []byte) error {
 	return nil
 }
 
+func getBufferFromGateway(address string, buffer []byte) (*GatewayBuffer, error) {
+	socket, err := getSocket(address)
+
+	if err != nil {
+		return nil, err
+	}
+	defer socket.free()
+
+	recv := make(chan *GatewayBuffer)
+
+	go func() {
+		// 接收信息
+		var maxLen uint32 = 10 * 1024 * 1024 // 最大读取10MB数据
+		var packLen uint32
+
+		// read from the connection
+		var buf = make([]byte, maxLen)
+		for {
+
+			n, err := socket.conn.Read(buf)
+			if err != nil {
+				return
+			}
+
+			packLen = binary.BigEndian.Uint32(buf[0:4])
+
+			if packLen < maxLen {
+				// 返回数据
+				recv <- &GatewayBuffer{address, buf[4:n]}
+				return
+			}
+		}
+	}()
+
+	for {
+		n, err := socket.conn.Write(buffer)
+		if err != nil {
+			fmt.Println(err)
+			break
+		}
+
+		if n == len(buffer) {
+			break
+		}
+	}
+
+	return <-recv, nil
+}
+
 // 发送buffer数据到网关
 func sendAndRecv(address string, gatewayBuffer []byte, recv chan GatewayBuffer) {
 	conn, err := net.Dial("tcp", address)
 	if err != nil {
 		fmt.Println(err)
-		close(recv)
 		return
 	}
 	fmt.Println(" sendBufferToGateway: ", address, " connected!")

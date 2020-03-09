@@ -60,3 +60,16 @@ func TestClientToAddress(t *testing.T) {
 	localIp, localPort, connId, err := clientIdToAddress("7f0000010b5500000001")
 	fmt.Printf("localIp:%s, localPort:%d, connId:%d, err:%s", localIp, localPort, connId, err)
 }
+
+func TestGetBufferFromGateway(t *testing.T) {
+	protocol := Protocol{}
+	protocol.Cmd = CMD_SELECT
+	protocol.ExtData = `{"fields":["uid","groups","session"],"where":{"uid":["1"]}}`
+	buff, _ := protocol.ToBuffer()
+	gatewayBuffer, err := getBufferFromGateway("127.0.0.1:2903", buff)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fmt.Println(gatewayBuffer.UnMarshal())
+}
